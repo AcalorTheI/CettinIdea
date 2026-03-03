@@ -1,0 +1,81 @@
+{
+  "delta_mbps": 10,
+  "links": [
+    {"name": "ring_A", "capacity_mbps": 700},
+    {"name": "ring_B", "capacity_mbps": 500}
+  ],
+  "streams": [
+    {
+      "name": "site01_voice",
+      "link": "ring_A",
+      "demand_mbps": 120,
+      "min_guarantee_mbps": 100,
+      "priority_weight": 3.5,
+      "prev_alloc_mbps": 110
+    },
+    {
+      "name": "site01_data",
+      "link": "ring_A",
+      "demand_mbps": 160,
+      "min_guarantee_mbps": 60,
+      "priority_weight": 1.1,
+      "prev_alloc_mbps": 140
+    },
+    {
+      "name": "site01_fwa",
+      "link": "ring_A",
+      "demand_mbps": 110,
+      "min_guarantee_mbps": 40,
+      "priority_weight": 1.0,
+      "prev_alloc_mbps": 80
+    },
+    {
+      "name": "site02_voice",
+      "link": "ring_A",
+      "demand_mbps": 100,
+      "min_guarantee_mbps": 90,
+      "priority_weight": 3.2,
+      "prev_alloc_mbps": 95
+    },
+    {
+      "name": "site02_enterprise",
+      "link": "ring_A",
+      "demand_mbps": 150,
+      "min_guarantee_mbps": 120,
+      "priority_weight": 2.8,
+      "prev_alloc_mbps": 130
+    },
+    {
+      "name": "site03_data",
+      "link": "ring_B",
+      "demand_mbps": 180,
+      "min_guarantee_mbps": 70,
+      "priority_weight": 1.2,
+      "prev_alloc_mbps": 150
+    },
+    {
+      "name": "site03_voice",
+      "link": "ring_B",
+      "demand_mbps": 90,
+      "min_guarantee_mbps": 80,
+      "priority_weight": 3.0,
+      "prev_alloc_mbps": 90
+    },
+    {
+      "name": "site04_enterprise",
+      "link": "ring_B",
+      "demand_mbps": 140,
+      "min_guarantee_mbps": 110,
+      "priority_weight": 2.6,
+      "prev_alloc_mbps": 130
+    },
+    {
+      "name": "site04_data",
+      "link": "ring_B",
+      "demand_mbps": 130,
+      "min_guarantee_mbps": 50,
+      "priority_weight": 1.0,
+      "prev_alloc_mbps": 100
+    }
+  ]
+}

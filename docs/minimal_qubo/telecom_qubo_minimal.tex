@@ -1,0 +1,78 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\title{Minimal QUBO for Telecom Backhaul Allocation}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\textbf{Goal.} Allocate limited backhaul bandwidth to service streams while respecting SLAs.
+
+\section*{Minimal Case}
+Two streams $s\in\{1,2\}$ share one bottleneck link with capacity $C$.
+
+\begin{itemize}
+\item Chunk size: $\Delta$ Mbps
+\item Binary allocation variables: $y_{s,k}\in\{0,1\}$ for $k=1,\dots,K_s$
+\item Allocated bandwidth: $B_s = \sum_{k=1}^{K_s} \Delta\, y_{s,k}$
+\item Demand: $D_s$, minimum guarantee: $G_s$, priority: $w_s$, previous allocation: $B_s^{\text{prev}}$
+\end{itemize}
+
+\section*{Objective Terms}
+We minimize weighted shortfall and allocation instability.
+
+\subsection*{1) Shortfall (soft)}
+Introduce nonnegative shortfall variable $q_s$ (binary encoded in QUBO) with
+\[
+B_s + q_s = D_s,\quad q_s\ge 0.
+\]
+Penalty + cost:
+\[
+\lambda_{\text{sf}}\sum_{s=1}^2 (B_s + q_s - D_s)^2 + \alpha\sum_{s=1}^2 w_s q_s.
+\]
+
+\subsection*{2) Stability}
+\[
+\lambda_{\text{st}}\sum_{s=1}^2 (B_s - B_s^{\text{prev}})^2.
+\]
+
+\section*{Constraints as Quadratic Penalties}
+\subsection*{3) Link capacity}
+With nonnegative slack $u$ (binary encoded):
+\[
+B_1 + B_2 + u = C,\quad u\ge 0,
+\]
+\[
+\lambda_{\text{cap}}(B_1 + B_2 + u - C)^2.
+\]
+
+\subsection*{4) Minimum guarantees}
+For each stream, use nonnegative slack $r_s$:
+\[
+B_s - r_s = G_s,\quad r_s\ge 0,
+\]
+\[
+\lambda_{\text{min}}\sum_{s=1}^2 (B_s - r_s - G_s)^2.
+\]
+
+\section*{Final QUBO Energy}
+\[
+E(\mathbf{x})=
+\lambda_{\text{sf}}\sum_{s=1}^2 (B_s + q_s - D_s)^2
++ \alpha\sum_{s=1}^2 w_s q_s
++ \lambda_{\text{st}}\sum_{s=1}^2 (B_s - B_s^{\text{prev}})^2
++ \lambda_{\text{cap}}(B_1 + B_2 + u - C)^2
++ \lambda_{\text{min}}\sum_{s=1}^2 (B_s - r_s - G_s)^2.
+\]
+All variables are binary after encoding $q_s, u, r_s$ with bit variables.
+
+\section*{Tiny Numeric Example}
+Let $\Delta=10$ Mbps, $C=100$, $D_1=70$, $D_2=60$, $G_1=40$, $G_2=30$.
+Then $D_1+D_2=130>C$, so the optimizer must throttle. If $w_1>w_2$, stream 1 is protected more strongly, so optimal QUBO solutions tend to keep $B_1$ closer to $D_1$ and assign larger shortfall to stream 2.
+
+\end{document}
