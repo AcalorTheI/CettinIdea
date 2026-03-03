@@ -3,6 +3,8 @@
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
 \usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
 \usepackage[a4paper,margin=2.2cm]{geometry}
 \title{Minimal QUBO for Telecom Backhaul Allocation}
 \author{}
@@ -12,67 +14,253 @@
 \maketitle
 
 \textbf{Goal.} Allocate limited backhaul bandwidth to service streams while respecting SLAs.
+The problem is cast as a Quadratic Unconstrained Binary Optimisation (QUBO) so it can be
+solved directly on a D-Wave quantum annealer or any compatible sampler.
 
+% -----------------------------------------------------------------------
 \section*{Minimal Case}
-Two streams $s\in\{1,2\}$ share one bottleneck link with capacity $C$.
 
-\begin{itemize}
-\item Chunk size: $\Delta$ Mbps
-\item Binary allocation variables: $y_{s,k}\in\{0,1\}$ for $k=1,\dots,K_s$
-\item Allocated bandwidth: $B_s = \sum_{k=1}^{K_s} \Delta\, y_{s,k}$
-\item Demand: $D_s$, minimum guarantee: $G_s$, priority: $w_s$, previous allocation: $B_s^{\text{prev}}$
-\end{itemize}
+Two streams $s\in\{1,2\}$ share one bottleneck link with capacity $C$ Mbps.
+The solver must decide, in discrete \emph{chunk} steps of size $\Delta$ Mbps, how much
+bandwidth each stream receives.
 
+% -----------------------------------------------------------------------
+\section*{Variable Glossary}
+
+\subsection*{Problem Parameters (inputs, not optimised)}
+
+\begin{tabular}{@{}lp{10.5cm}@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$C$ & Link capacity in Mbps. Hard upper bound on the total bandwidth that can be
+      assigned across all streams sharing that link.
+      \textit{Code:} \texttt{Link.capacity\_mbps}. \\[4pt]
+
+$\Delta$ & Chunk size in Mbps. The smallest unit of bandwidth that can be
+           allocated. A finer $\Delta$ gives more resolution but adds more binary
+           variables.
+           \textit{Code:} \texttt{delta\_mbps} (default 10). \\[4pt]
+
+$D_s$ & Demand of stream $s$ in Mbps: the bandwidth it ideally wants.
+        \textit{Code:} \texttt{Stream.demand\_mbps}. \\[4pt]
+
+$G_s$ & Minimum guarantee of stream $s$ in Mbps: the floor below which the
+        allocation must not fall (SLA floor).
+        \textit{Code:} \texttt{Stream.min\_guarantee\_mbps}. \\[4pt]
+
+$w_s$ & Priority weight of stream $s$. A higher value means shortfall for this
+        stream is penalised more heavily. Voice streams typically carry
+        $w_s \approx 3$--$4$; best-effort data carries $w_s \approx 1$.
+        \textit{Code:} \texttt{Stream.priority\_weight}. \\[4pt]
+
+$B_s^{\text{prev}}$ & Bandwidth allocated to stream $s$ in the \emph{previous}
+                      scheduling interval. Used to penalise large swings that
+                      would disrupt in-flight flows.
+                      \textit{Code:} \texttt{Stream.prev\_alloc\_mbps}. \\[4pt]
+
+$K_s$ & Number of allocation chunks available for stream $s$,
+        $K_s = \lceil \max(D_s, G_s) / \Delta \rceil$.
+        \textit{Code:} \texttt{max\_chunks\_by\_stream[s.name]}. \\[4pt]
+
+$\lambda_{\text{sf}}$ & Penalty strength for the shortfall equality constraint.
+                        Governs how strongly the solver is pushed to satisfy
+                        $B_s + q_s = D_s$.
+                        \textit{Code:} \texttt{lambda\_shortfall} (default 6.0). \\[4pt]
+
+$\lambda_{\text{st}}$ & Penalty strength for the stability term.  Kept small
+                        relative to $\lambda_{\text{sf}}$ so that stability is a
+                        soft preference, not a hard requirement.
+                        \textit{Code:} \texttt{lambda\_stability} (default 0.03). \\[4pt]
+
+$\lambda_{\text{cap}}$ & Penalty strength for the link-capacity constraint.
+                         Should be the largest $\lambda$ to make capacity
+                         violation the most expensive outcome.
+                         \textit{Code:} \texttt{lambda\_capacity} (default 15.0). \\[4pt]
+
+$\lambda_{\text{min}}$ & Penalty strength for the minimum-guarantee constraint.
+                         Set between $\lambda_{\text{sf}}$ and $\lambda_{\text{cap}}$
+                         to prioritise guarantees over full-demand satisfaction.
+                         \textit{Code:} \texttt{lambda\_min\_guarantee} (default 12.0). \\[4pt]
+
+$\alpha$ & Linear cost coefficient applied to the shortfall.
+           Together with $w_s$ it provides a \emph{direct} per-Mbps shortfall
+           cost in addition to the quadratic penalty.
+           \textit{Code:} embedded as \texttt{sf\_linear\_weight = lambda\_shortfall * s.priority\_weight}. \\
+
+\bottomrule
+\end{tabular}
+
+\subsection*{Decision Variables (binary, optimised by the solver)}
+
+\begin{tabular}{@{}lp{10.5cm}@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$y_{s,k}\in\{0,1\}$ & Allocation bit for stream $s$, chunk index $k=0,\dots,K_s-1$.
+                       Setting $y_{s,k}=1$ grants $\Delta$ Mbps to stream $s$.
+                       \textit{Code variable name:} \texttt{y::\{stream\}::\{k\}}. \\[4pt]
+
+$B_s$ & Derived (not a QUBO variable itself): total bandwidth allocated to
+        stream $s$,
+        \[B_s = \Delta\sum_{k=0}^{K_s-1} y_{s,k}.\]
+        It is a linear function of the $y_{s,k}$ bits and appears inside every
+        penalty term. \\[4pt]
+
+$q_{s,b}\in\{0,1\}$ & Shortfall bit $b$ for stream $s$.
+                       Together these bits binary-encode the integer shortfall
+                       in chunk units:
+                       \[q_s = \Delta\sum_{b} 2^b\, q_{s,b}.\]
+                       $q_s$ represents how many Mbps stream $s$ falls short of
+                       its demand $D_s$.  It is introduced so that the equality
+                       $B_s + q_s = D_s$ can be written as a quadratic penalty.
+                       \textit{Code variable name:} \texttt{sf::\{stream\}::\{b\}}.
+                       Number of bits: $\lceil\log_2 K_s\rceil + 1$.\\[4pt]
+
+$u_b\in\{0,1\}$ & Capacity slack bit $b$ for the link.
+                  Together these bits binary-encode the unused link capacity:
+                  \[u = \Delta\sum_{b} 2^b\, u_b,\quad u \ge 0.\]
+                  $u$ lets the sum $B_1+B_2+u=C$ be turned into a
+                  penalty that is zero exactly when the constraint is tight or
+                  under-utilised.
+                  \textit{Code variable name:} \texttt{csl::\{link\}::\{b\}}.\\[4pt]
+
+$r_{s,b}\in\{0,1\}$ & Guarantee-slack bit $b$ for stream $s$.
+                       Together these bits binary-encode the surplus above the
+                       guarantee floor:
+                       \[r_s = \Delta\sum_{b} 2^b\, r_{s,b},\quad r_s \ge 0.\]
+                       $r_s$ captures how far above $G_s$ the allocation sits.
+                       The equality $B_s - r_s = G_s$ is zero only when
+                       $B_s \ge G_s$, so any violation raises the energy.
+                       \textit{Code variable name:} \texttt{gsl::\{stream\}::\{b\}}.\\
+
+\bottomrule
+\end{tabular}
+
+\bigskip
+\noindent\textbf{Why binary encode continuous slack?}
+QUBO requires every variable to be binary ($\{0,1\}$).  Non-negative integers
+like $q_s$ are represented in binary via the standard basis
+$q_s = \sum_b 2^b q_{s,b}$, scaled by $\Delta$ to stay in Mbps units.
+The number of bits needed is $\lceil\log_2(\text{max value})\rceil + 1$, computed
+in the code by \texttt{bit\_width\_for\_nonnegative\_integer}.
+
+% -----------------------------------------------------------------------
 \section*{Objective Terms}
-We minimize weighted shortfall and allocation instability.
 
-\subsection*{1) Shortfall (soft)}
-Introduce nonnegative shortfall variable $q_s$ (binary encoded in QUBO) with
+We minimise a weighted sum of penalty terms.  Each term is zero when the
+corresponding constraint or preference is exactly satisfied, and grows
+quadratically with the violation.
+
+\subsection*{1) Shortfall (soft demand satisfaction)}
+
+We want $B_s$ to be as close to $D_s$ as possible.  Introduce the shortfall
+$q_s \ge 0$ and enforce the equality:
 \[
 B_s + q_s = D_s,\quad q_s\ge 0.
 \]
-Penalty + cost:
+The quadratic penalty drives the equality to zero; the linear term gives a
+per-Mbps cost proportional to the stream's priority weight:
 \[
-\lambda_{\text{sf}}\sum_{s=1}^2 (B_s + q_s - D_s)^2 + \alpha\sum_{s=1}^2 w_s q_s.
+\lambda_{\text{sf}}\sum_{s=1}^2 (B_s + q_s - D_s)^2
++ \alpha\sum_{s=1}^2 w_s\, q_s.
 \]
+When allocation equals demand ($B_s = D_s$) the optimal $q_s = 0$ and both
+terms vanish.  When the link is over-subscribed, the solver raises $q_s$ for
+lower-priority streams first because their $w_s$ is smaller, incurring a
+lower linear cost.
 
-\subsection*{2) Stability}
+\subsection*{2) Stability (allocation smoothness)}
+
+Large shifts between intervals disrupt TCP flows and increase re-ordering.
+We penalise the squared distance from the previous allocation:
 \[
 \lambda_{\text{st}}\sum_{s=1}^2 (B_s - B_s^{\text{prev}})^2.
 \]
+$\lambda_{\text{st}} \ll \lambda_{\text{sf}}$ so this is a soft preference:
+the solver will deviate from $B_s^{\text{prev}}$ when necessary to satisfy
+demand or capacity, but avoids unnecessary churn.
 
+% -----------------------------------------------------------------------
 \section*{Constraints as Quadratic Penalties}
+
+Hard constraints cannot be expressed in QUBO directly; instead they are added
+as penalty terms whose coefficients are large enough that any constraint
+violation costs more than any objective gain.
+
 \subsection*{3) Link capacity}
-With nonnegative slack $u$ (binary encoded):
+
+The total bandwidth on the link must not exceed $C$.  Introduce nonnegative
+slack $u$ representing unused capacity:
 \[
 B_1 + B_2 + u = C,\quad u\ge 0,
 \]
 \[
 \lambda_{\text{cap}}(B_1 + B_2 + u - C)^2.
 \]
+$u$ absorbs the gap between total allocation and the capacity ceiling.  When the
+link is exactly full, $u=0$.  When under-utilised, $u=C - B_1 - B_2 > 0$.
+Over-subscription ($B_1+B_2>C$) cannot be absorbed by $u$ (it is non-negative),
+so the penalty is non-zero, repelling the solver from that region.
+$\lambda_{\text{cap}}$ is the largest penalty coefficient to make capacity
+violation the most expensive outcome in the energy landscape.
 
 \subsection*{4) Minimum guarantees}
-For each stream, use nonnegative slack $r_s$:
+
+Each stream must receive at least $G_s$ Mbps.  A nonnegative slack $r_s$
+captures the surplus:
 \[
 B_s - r_s = G_s,\quad r_s\ge 0,
 \]
 \[
 \lambda_{\text{min}}\sum_{s=1}^2 (B_s - r_s - G_s)^2.
 \]
+When $B_s \ge G_s$ the solver can set $r_s = B_s - G_s \ge 0$ and the penalty
+vanishes.  When $B_s < G_s$ there is no valid non-negative $r_s$; the penalty
+is strictly positive, steering the solver away from under-provisioning.
 
+% -----------------------------------------------------------------------
 \section*{Final QUBO Energy}
-\[
-E(\mathbf{x})=
-\lambda_{\text{sf}}\sum_{s=1}^2 (B_s + q_s - D_s)^2
-+ \alpha\sum_{s=1}^2 w_s q_s
-+ \lambda_{\text{st}}\sum_{s=1}^2 (B_s - B_s^{\text{prev}})^2
-+ \lambda_{\text{cap}}(B_1 + B_2 + u - C)^2
-+ \lambda_{\text{min}}\sum_{s=1}^2 (B_s - r_s - G_s)^2.
-\]
-All variables are binary after encoding $q_s, u, r_s$ with bit variables.
 
+Combining all terms gives the energy function that the annealer minimises:
+\begin{align*}
+E(\mathbf{x}) &=
+\underbrace{\lambda_{\text{sf}}\sum_{s=1}^2 (B_s + q_s - D_s)^2
++ \alpha\sum_{s=1}^2 w_s q_s}_{\text{shortfall cost}} \\[6pt]
+&\quad+\;\underbrace{\lambda_{\text{st}}\sum_{s=1}^2 (B_s - B_s^{\text{prev}})^2}_{\text{stability cost}}
++\;\underbrace{\lambda_{\text{cap}}(B_1 + B_2 + u - C)^2}_{\text{capacity constraint}}
++\;\underbrace{\lambda_{\text{min}}\sum_{s=1}^2 (B_s - r_s - G_s)^2}_{\text{guarantee constraint}}.
+\end{align*}
+
+\noindent All variables are binary after encoding $q_s$, $u$, $r_s$ with bit vectors.
+The expansion of each squared term produces the linear (diagonal) and quadratic
+(off-diagonal) QUBO coefficients added by \texttt{add\_square\_penalty} in the
+code.
+
+\bigskip
+\noindent\textbf{Penalty coefficient ordering.} For constraints to dominate
+objectives the coefficients must satisfy
+\[
+\lambda_{\text{cap}} > \lambda_{\text{min}} > \lambda_{\text{sf}} \gg \lambda_{\text{st}}.
+\]
+The defaults (15, 12, 6, 0.03) reflect this hierarchy: capacity is never
+violated, guarantees are protected next, demand satisfaction comes third, and
+stability is a soft tie-breaker.
+
+% -----------------------------------------------------------------------
 \section*{Tiny Numeric Example}
+
 Let $\Delta=10$ Mbps, $C=100$, $D_1=70$, $D_2=60$, $G_1=40$, $G_2=30$.
-Then $D_1+D_2=130>C$, so the optimizer must throttle. If $w_1>w_2$, stream 1 is protected more strongly, so optimal QUBO solutions tend to keep $B_1$ closer to $D_1$ and assign larger shortfall to stream 2.
+Then $D_1+D_2=130>C$, so the optimizer must throttle.
+
+Stream 1 and 2 each get $K_s = \lceil D_s/\Delta \rceil = 7$ and $6$ allocation
+bits respectively, plus shortfall and slack bits, for a total variable count
+well within classical sampler reach.
+
+If $w_1 > w_2$, the shortfall linear term penalises stream 2's shortfall less
+than stream 1's.  The optimal QUBO solution therefore keeps $B_1$ closer to
+$D_1 = 70$ and assigns the larger shortfall to stream 2, while still respecting
+both minimum guarantees ($G_1=40$, $G_2=30$) via the capacity-slack variable
+$u$ that absorbs the remaining $100 - B_1 - B_2$ Mbps.
 
 \end{document}
